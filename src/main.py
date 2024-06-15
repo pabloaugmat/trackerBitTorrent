@@ -53,12 +53,14 @@ class TorrentTracker(resource.Resource):
             request.setResponseCode(200)
             return bencoded_data
         elif len(path) == 2 and path[1] == 'update':
+            info_hash = params['info_hash']
+            peer_id = params['peer_id']
             current_time = time.time()
             with self.conn:
                 self.conn.execute('''
                     UPDATE peers SET last_seen = ? WHERE info_hash = ? AND peer_id = ?
                 ''', (current_time, info_hash, peer_id))
-            return request.setResponseCode(200)
+            return 'Sucesso'
         
         params = {k.decode(): v[0].decode() for k, v in request.args.items()}
         
