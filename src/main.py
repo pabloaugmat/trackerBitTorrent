@@ -26,6 +26,9 @@ class TorrentTracker(resource.Resource):
             self.conn.execute('''
                 CREATE TABLE IF NOT EXISTS peers (
                     info_hash TEXT,
+                    nome TEXT,
+                    tipo_midia TEXT,
+                    descricao TEXT,
                     peer_id TEXT,
                     ip TEXT,
                     port INTEGER,
@@ -35,6 +38,21 @@ class TorrentTracker(resource.Resource):
             ''')
 
     def render_GET(self, request):
+
+        path = request.path.decode().strip('/').split('/')
+        
+        if len(path) == 2 and path[1] == 'torrents':
+            torrents_data = self.handle_get_all_torrents()
+            if torrents_data is None:
+                request.setResponseCode(500)
+                return b'Failed to fetch torrents data'
+            
+            bencoded_data = bencodepy.encode(torrents_data)
+                
+            request.responseHeaders.addRawHeader(b'content-type', b'application/json')
+            request.setResponseCode(200)
+            return bencoded_data
+        
         params = {k.decode(): v[0].decode() for k, v in request.args.items()}
         
         # Verifica a validade dos parâmetros
@@ -43,9 +61,12 @@ class TorrentTracker(resource.Resource):
             return b'Invalid request'
 
         info_hash = params['info_hash']
+        nome = params['nome']
+        tipo_midia = params['tipo_midia']
+        descricao = params['descricao']
         peer_id = params['peer_id']
         port = params['port']
-        
+       
         if not re.match(r'^[0-9]+$', port):
             request.setResponseCode(400)
             return b'Invalid port number'
@@ -57,9 +78,10 @@ class TorrentTracker(resource.Resource):
         current_time = time.time()
         with self.conn:
             self.conn.execute('''
-                INSERT OR REPLACE INTO peers (info_hash, peer_id, ip, port, last_seen)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (info_hash, peer_id, ip, port, current_time))
+                INSERT OR REPLACE INTO peers (info_hash, nome, tipo_midia, descricao, 
+                              peer_id, ip, port, last_seen)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (info_hash, nome, tipo_midia, descricao, peer_id, ip, port, current_time))
 
         # Limpa peers inativos
         self.cleanup_peers(info_hash, current_time)
@@ -77,7 +99,29 @@ class TorrentTracker(resource.Resource):
         }
         
         return bencodepy.encode(response)
-
+    
+    def handle_get_all_torrents(self):
+        try:
+            with self.conn:
+                cursor = self.conn.execute('SELECT nome, tipo_midia, descricao, info_hash FROM peers')
+                torrents_info = []
+                for row in cursor:
+                    nome = row[0]
+                    tipo_midia = row[1]
+                    descricao = row[2]
+                    info_hash = row[3]
+                    torrents_info.append({
+                        'nome': nome,
+                        'tipo_midia': tipo_midia,
+                        'descricao': descricao,
+                        'info_hash': info_hash
+                    }) 
+                    print(torrents_info)
+                return torrents_info
+        except Exception as e:
+            print(f"Error fetching torrents from DB: {e}")
+            return None
+    
     def cleanup_all_peers(self):
         current_time = time.time()
         with self.conn:
