@@ -53,6 +53,7 @@ class TorrentTracker(resource.Resource):
             request.setResponseCode(200)
             return bencoded_data
         elif len(path) == 2 and path[1] == 'update':
+            params = {k.decode(): v[0].decode() for k, v in request.args.items()}
             info_hash = params['info_hash']
             peer_id = params['peer_id']
             current_time = time.time()
@@ -61,6 +62,21 @@ class TorrentTracker(resource.Resource):
                     UPDATE peers SET last_seen = ? WHERE info_hash = ? AND peer_id = ?
                 ''', (current_time, info_hash, peer_id))
             return 'Sucesso'
+        
+        elif len(path) == 2 and path[1] == 'download':
+            params = {k.decode(): v[0].decode() for k, v in request.args.items()}
+            info_hash = params['info_hash']
+            torrents_data = self.handle_get_info_hash(info_hash)
+            if torrents_data is None:
+                request.setResponseCode(500)
+                return b'Failed to fetch torrents data'
+            
+            bencoded_data = bencodepy.encode(torrents_data)
+                
+            request.responseHeaders.addRawHeader(b'content-type', b'application/json')
+            request.setResponseCode(200)
+            return bencoded_data
+
         
         params = {k.decode(): v[0].decode() for k, v in request.args.items()}
         
@@ -125,7 +141,24 @@ class TorrentTracker(resource.Resource):
                         'descricao': descricao,
                         'info_hash': info_hash
                     }) 
-                    print(torrents_info)
+                return torrents_info
+        except Exception as e:
+            print(f"Error fetching torrents from DB: {e}")
+            return None
+    
+    def handle_get_info_hash(self, info_hash):
+        try:
+            with self.conn:
+                cursor = self.conn.execute('SELECT info_hash, peer_id, ip, port FROM peers WHERE info_hash = ?', (info_hash,))
+                torrents_info = []
+    
+                for row in cursor.fetchall():
+                    torrents_info.append({
+                        'info_hash': row[0],  
+                        'peer_id': row[1],    
+                        'ip': row[2],        
+                        'port': row[3]   
+                    })
                 return torrents_info
         except Exception as e:
             print(f"Error fetching torrents from DB: {e}")
