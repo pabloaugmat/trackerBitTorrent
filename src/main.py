@@ -1,10 +1,56 @@
 import time
-import re
 import bencodepy
 import sqlite3
 from twisted.internet import reactor
 from twisted.web import server, resource
 from twisted.internet.task import LoopingCall
+
+class Tracker(resource.Resource):
+    isLeaf = True
+    peers = {}
+
+    def render_GET(self, request):
+        # Parse query parameters
+        info_hash = request.args[b'info_hash'][0]
+        peer_id = request.args[b'peer_id'][0]
+        ip = request.getClientIP().encode('utf-8')
+        port = request.args[b'port'][0]
+        event = request.args.get(b'event', [b''])[0]
+
+        # Log request for debugging
+        print(f"Received request: info_hash={info_hash}, peer_id={peer_id}, ip={ip}, port={port}, event={event}")
+
+        # Initialize the peer list for this info_hash if not already done
+        if info_hash not in self.peers:
+            self.peers[info_hash] = []
+
+        # Handle different events
+        if event == b'started':
+            self.peers[info_hash].append((peer_id, ip, port, time.time()))
+        elif event == b'stopped':
+            self.peers[info_hash] = [p for p in self.peers[info_hash] if p[0] != peer_id]
+        elif event == b'completed':
+            # Optionally handle completed event
+            pass
+        else:
+            # Update timestamp for regular announces
+            for peer in self.peers[info_hash]:
+                if peer[0] == peer_id:
+                    self.peers[info_hash].remove(peer)
+                    self.peers[info_hash].append((peer_id, ip, port, time.time()))
+
+        # Remove stale peers (e.g., peers that haven't announced in the last 30 minutes)
+        current_time = time.time()
+        self.peers[info_hash] = [p for p in self.peers[info_hash] if current_time - p[3] < 1800]
+
+        # Build the response
+        response = b'd8:intervali1800e5:peers'
+        peers_list = b''.join([
+            ip + int(port).to_bytes(2, 'big') for _, ip, port, _ in self.peers[info_hash]
+        ])
+        response += str(len(peers_list)).encode('utf-8') + b':' + peers_list + b'e'
+
+        return response
 
 class TorrentTracker(resource.Resource):
     isLeaf = True
@@ -25,15 +71,11 @@ class TorrentTracker(resource.Resource):
         with self.conn:
             self.conn.execute('''
                 CREATE TABLE IF NOT EXISTS peers (
-                    info_hash TEXT,
-                    nome TEXT,
-                    tipo_midia TEXT,
-                    descricao TEXT,
-                    peer_id TEXT,
-                    ip TEXT,
-                    port INTEGER,
-                    last_seen REAL,
-                    PRIMARY KEY (info_hash, peer_id)
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     nome TEXT,
+                     tipo_midia TEXT,
+                     descricao TEXT,
+                     link_magnetico TEXT
                 )
             ''')
 
@@ -52,133 +94,50 @@ class TorrentTracker(resource.Resource):
             request.responseHeaders.addRawHeader(b'content-type', b'application/json')
             request.setResponseCode(200)
             return bencoded_data
-        elif len(path) == 2 and path[1] == 'update':
-            params = {k.decode(): v[0].decode() for k, v in request.args.items()}
-            info_hash = params['info_hash']
-            peer_id = params['peer_id']
-            current_time = time.time()
-            with self.conn:
-                self.conn.execute('''
-                    UPDATE peers SET last_seen = ? WHERE info_hash = ? AND peer_id = ?
-                ''', (current_time, info_hash, peer_id))
-            return 'Sucesso'
-        
-        elif len(path) == 2 and path[1] == 'download':
-            params = {k.decode(): v[0].decode() for k, v in request.args.items()}
-            info_hash = params['info_hash']
-            torrents_data = self.handle_get_info_hash(info_hash)
-            if torrents_data is None:
-                request.setResponseCode(500)
-                return b'Failed to fetch torrents data'
-            
-            bencoded_data = bencodepy.encode(torrents_data)
-                
-            request.responseHeaders.addRawHeader(b'content-type', b'application/json')
-            request.setResponseCode(200)
-            return bencoded_data
-
         
         params = {k.decode(): v[0].decode() for k, v in request.args.items()}
-        
-        # Verifica a validade dos parâmetros
-        if 'info_hash' not in params or 'peer_id' not in params or 'port' not in params:
-            request.setResponseCode(400)
-            return b'Invalid request'
-
-        info_hash = params['info_hash']
+       
         nome = params['nome']
         tipo_midia = params['tipo_midia']
         descricao = params['descricao']
-        peer_id = params['peer_id']
-        port = params['port']
+        link_magnetico = params['link_magnetico']
        
-        if not re.match(r'^[0-9]+$', port):
-            request.setResponseCode(400)
-            return b'Invalid port number'
-
-        port = int(port)
-        ip = request.getClientIP()
-
-        # Adiciona ou atualiza o peer no banco de dados
-        current_time = time.time()
+       
         with self.conn:
             self.conn.execute('''
-                INSERT OR REPLACE INTO peers (info_hash, nome, tipo_midia, descricao, 
-                              peer_id, ip, port, last_seen)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (info_hash, nome, tipo_midia, descricao, peer_id, ip, port, current_time))
-
-        # Limpa peers inativos
-        self.cleanup_peers(info_hash, current_time)
-
-        # Prepara a resposta com a lista de peers
-        with self.conn:
-            cursor = self.conn.execute('''
-                SELECT ip, port FROM peers WHERE info_hash = ?
-            ''', (info_hash,))
-            peers = [{'ip': row[0], 'port': row[1]} for row in cursor]
-
-        response = {
-            'interval': self.cleanup_interval,
-            'peers': peers
-        }
-        
-        return bencodepy.encode(response)
+                INSERT OR REPLACE INTO peers (nome, tipo_midia, descricao, 
+                              link_magnetico)
+                VALUES (?, ?, ?, ?)
+            ''', (nome, tipo_midia, descricao, link_magnetico))
     
     def handle_get_all_torrents(self):
         try:
             with self.conn:
-                cursor = self.conn.execute('SELECT nome, tipo_midia, descricao, info_hash FROM peers')
+                cursor = self.conn.execute('SELECT nome, tipo_midia, descricao, link_magnetico FROM peers')
                 torrents_info = []
                 for row in cursor:
                     nome = row[0]
                     tipo_midia = row[1]
                     descricao = row[2]
-                    info_hash = row[3]
+                    link_magnetico = row[3]
                     torrents_info.append({
                         'nome': nome,
                         'tipo_midia': tipo_midia,
                         'descricao': descricao,
-                        'info_hash': info_hash
+                        'link_magnetico': link_magnetico
                     }) 
                 return torrents_info
         except Exception as e:
             print(f"Error fetching torrents from DB: {e}")
             return None
     
-    def handle_get_info_hash(self, info_hash):
-        try:
-            with self.conn:
-                cursor = self.conn.execute('SELECT info_hash, peer_id, ip, port FROM peers WHERE info_hash = ?', (info_hash,))
-                torrents_info = []
-    
-                for row in cursor.fetchall():
-                    torrents_info.append({
-                        'info_hash': row[0],  
-                        'peer_id': row[1],    
-                        'ip': row[2],        
-                        'port': row[3]   
-                    })
-                return torrents_info
-        except Exception as e:
-            print(f"Error fetching torrents from DB: {e}")
-            return None
-    
-    def cleanup_all_peers(self):
-        current_time = time.time()
-        with self.conn:
-            self.conn.execute('''
-                DELETE FROM peers WHERE ? - last_seen > ?
-            ''', (current_time, self.cleanup_interval))
-
-    def cleanup_peers(self, info_hash, current_time):
-        with self.conn:
-            self.conn.execute('''
-                DELETE FROM peers WHERE info_hash = ? AND ? - last_seen > ?
-            ''', (info_hash, current_time, self.cleanup_interval))
-
+   
 if __name__ == '__main__':
-    tracker = TorrentTracker()
-    site = server.Site(tracker)
+    root = resource.Resource()
+    root.putChild(b"tracker", Tracker())
+    root.putChild(b"dados", TorrentTracker())
+
+    site = server.Site(root)
     reactor.listenTCP(6969, site)
+    print("Server is running on port 6969")
     reactor.run()
