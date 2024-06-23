@@ -50,6 +50,7 @@ class Tracker(resource.Resource):
         ])
         response += str(len(peers_list)).encode('utf-8') + b':' + peers_list + b'e'
 
+        print(f"Response: ", response)
         return response
 
 class TorrentTracker(resource.Resource):
@@ -71,16 +72,17 @@ class TorrentTracker(resource.Resource):
         with self.conn:
             self.conn.execute('''
                 CREATE TABLE IF NOT EXISTS peers (
-                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                     nome TEXT,
-                     tipo_midia TEXT,
-                     descricao TEXT,
-                     link_magnetico TEXT
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    nome TEXT,
+                    tipo_midia TEXT,
+                    descricao TEXT,
+                    link_magnetico TEXT,
+                    last_seen REAL
                 )
             ''')
 
     def render_GET(self, request):
-
+        print("agora vai!")
         path = request.path.decode().strip('/').split('/')
         
         if len(path) == 2 and path[1] == 'torrents':
@@ -90,26 +92,40 @@ class TorrentTracker(resource.Resource):
                 return b'Failed to fetch torrents data'
             
             bencoded_data = bencodepy.encode(torrents_data)
-                
             request.responseHeaders.addRawHeader(b'content-type', b'application/json')
             request.setResponseCode(200)
             return bencoded_data
         
-        params = {k.decode(): v[0].decode() for k, v in request.args.items()}
-       
-        nome = params['nome']
-        tipo_midia = params['tipo_midia']
-        descricao = params['descricao']
-        link_magnetico = params['link_magnetico']
-       
-       
-        with self.conn:
-            self.conn.execute('''
-                INSERT OR REPLACE INTO peers (nome, tipo_midia, descricao, 
-                              link_magnetico)
-                VALUES (?, ?, ?, ?)
-            ''', (nome, tipo_midia, descricao, link_magnetico))
-    
+        try:
+            params = {k.decode(): v[0].decode() for k, v in request.args.items()}
+            
+            nome = params['nome']
+            tipo_midia = params['tipo_midia']
+            descricao = params['descricao']
+            link_magnetico = params['link_magnetico']
+            print("nome:", nome)
+            print("tipo midia:", tipo_midia)
+            print("descricao:", descricao)
+            print("link magnetico:", link_magnetico)
+            
+            current_time = time.time()
+            with self.conn:
+                self.conn.execute('''
+                    INSERT OR REPLACE INTO peers (nome, tipo_midia, descricao, link_magnetico, last_seen)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (nome, tipo_midia, descricao, link_magnetico, current_time))
+                
+            request.setResponseCode(200)
+            return b'Successfully added the torrent data'
+        
+        except KeyError as e:
+            request.setResponseCode(400)
+            return f'Missing parameter: {str(e)}'.encode('utf-8')
+        
+        except Exception as e:
+            request.setResponseCode(500)
+            return f'Internal server error: {str(e)}'.encode('utf-8')
+
     def handle_get_all_torrents(self):
         try:
             with self.conn:
@@ -130,8 +146,17 @@ class TorrentTracker(resource.Resource):
         except Exception as e:
             print(f"Error fetching torrents from DB: {e}")
             return None
-    
-   
+        
+    def cleanup_all_peers(self):
+        current_time = time.time()
+        cutoff_time = current_time - self.cleanup_interval
+        print(f"Running cleanup task at {current_time}, removing peers with last_seen before {cutoff_time}")
+        with self.conn:
+            cursor = self.conn.execute('''
+                DELETE FROM peers WHERE last_seen < ?
+            ''', (cutoff_time,))
+            print(f"Deleted {cursor.rowcount} stale peers")
+
 if __name__ == '__main__':
     root = resource.Resource()
     root.putChild(b"tracker", Tracker())
