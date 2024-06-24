@@ -6,44 +6,44 @@ from twisted.web import server, resource
 from twisted.internet.task import LoopingCall
 
 class Tracker(resource.Resource):
-    isLeaf = True
-    peers = {}
+    isLeaf = True #recurso folha
+    peers = {} #dict: chave é info_hash e o valor é uma lista tuplas contento informações dos peers
 
     def render_GET(self, request):
-        # Parse query parameters
+        # parâmetros de consulta
         info_hash = request.args[b'info_hash'][0]
         peer_id = request.args[b'peer_id'][0]
         ip = request.getClientIP().encode('utf-8')
         port = request.args[b'port'][0]
         event = request.args.get(b'event', [b''])[0]
 
-        # Log request for debugging
+        # Log request para debug
         print(f"Received request: info_hash={info_hash}, peer_id={peer_id}, ip={ip}, port={port}, event={event}")
 
-        # Initialize the peer list for this info_hash if not already done
+        # Inicializa a lista de peers para info_hash
         if info_hash not in self.peers:
             self.peers[info_hash] = []
 
-        # Handle different events
+        # Condionais para lidar com eventos diferentes
         if event == b'started':
             self.peers[info_hash].append((peer_id, ip, port, time.time()))
         elif event == b'stopped':
             self.peers[info_hash] = [p for p in self.peers[info_hash] if p[0] != peer_id]
         elif event == b'completed':
-            # Optionally handle completed event
+            # opcional
             pass
         else:
-            # Update timestamp for regular announces
+            # Update timestamp para regular announces
             for peer in self.peers[info_hash]:
                 if peer[0] == peer_id:
                     self.peers[info_hash].remove(peer)
                     self.peers[info_hash].append((peer_id, ip, port, time.time()))
 
-        # Remove stale peers (e.g., peers that haven't announced in the last 30 minutes)
+        # Remove peers obsoletos
         current_time = time.time()
         self.peers[info_hash] = [p for p in self.peers[info_hash] if current_time - p[3] < 1800]
 
-        # Build the response
+        # Resposta da requição
         response = b'd8:intervali1800e5:peers'
         peers_list = b''.join([
             ip + int(port).to_bytes(2, 'big') for _, ip, port, _ in self.peers[info_hash]
@@ -82,14 +82,13 @@ class TorrentTracker(resource.Resource):
             ''')
 
     def render_GET(self, request):
-        print("agora vai!")
-        path = request.path.decode().strip('/').split('/')
+        path = request.path.decode().strip('/').split('/') # caminho da requisição
         
         if len(path) == 2 and path[1] == 'torrents':
             torrents_data = self.handle_get_all_torrents()
             if torrents_data is None:
                 request.setResponseCode(500)
-                return b'Failed to fetch torrents data'
+                return b'Falha ao buscar dados de torrents'
             
             bencoded_data = bencodepy.encode(torrents_data)
             request.responseHeaders.addRawHeader(b'content-type', b'application/json')
@@ -116,7 +115,7 @@ class TorrentTracker(resource.Resource):
                 ''', (nome, tipo_midia, descricao, link_magnetico, current_time))
                 
             request.setResponseCode(200)
-            return b'Successfully added the torrent data'
+            return b'Adicionados com sucesso os dados do torrent'
         
         except KeyError as e:
             request.setResponseCode(400)
@@ -144,7 +143,7 @@ class TorrentTracker(resource.Resource):
                     }) 
                 return torrents_info
         except Exception as e:
-            print(f"Error fetching torrents from DB: {e}")
+            print(f"Erro ao buscar torrents do banco de dados: {e}")
             return None
         
     def cleanup_all_peers(self):
@@ -159,10 +158,10 @@ class TorrentTracker(resource.Resource):
 
 if __name__ == '__main__':
     root = resource.Resource()
-    root.putChild(b"tracker", Tracker())
-    root.putChild(b"dados", TorrentTracker())
+    root.putChild(b"tracker", Tracker()) # filho que gerencia requisições relacionadas aos peers dos torrents
+    root.putChild(b"dados", TorrentTracker()) # filho que gerencia requisições relacionadas aos dados dos torrents no banco de dados
 
-    site = server.Site(root)
-    reactor.listenTCP(6969, site)
+    site = server.Site(root) #  responsavel por gerenciar todas as requisições HTTP recebidas
+    reactor.listenTCP(6969, site) #configurando o reactor para escutar na porta 6969
     print("Server is running on port 6969")
     reactor.run()
